@@ -137,6 +137,60 @@ public class KcOidcFirstBrokerLoginTest extends AbstractFirstBrokerLoginTest {
         assertThat(firstLoginRefreshToken, is(equalTo(secondLoginRefreshToken)));
     }
 
+    @Test
+    public void testPersistRefreshTokenOnClearCache() throws Exception {
+        // Step 1: Set up the identity provider and user in the provider realm
+        IdentityProviderResource idp = realmsResouce().realm(bc.consumerRealmName()).identityProviders().get(bc.getIDPAlias());
+        IdentityProviderRepresentation representation = idp.toRepresentation();
+        representation.setStoreToken(true);
+        idp.update(representation);
+
+        // Create a test user in the provider realm
+        createUser(bc.providerRealmName(), "brucewayne", BrokerTestConstants.USER_PASSWORD, "Bruce", "Wayne", "brucewayne@gotham.com");
+
+        oauth.clientId("broker-app");
+        loginPage.open(bc.consumerRealmName());
+        logInWithIdp(bc.getIDPAlias(), "brucewayne", BrokerTestConstants.USER_PASSWORD);
+
+        // Step 2: Obtain the stored token from the federated identity
+        String storedToken = testingClient.server(bc.consumerRealmName()).fetchString(session -> {
+            RealmModel realmModel = session.getContext().getRealm();
+            UserModel userModel = session.users().getUserByUsername(realmModel, "brucewayne");
+            FederatedIdentityModel fedIdentity = session.users().getFederatedIdentitiesStream(realmModel, userModel).findFirst().orElse(null);
+            return fedIdentity != null ? fedIdentity.getToken() : null;
+        });
+        assertThat(storedToken, not(nullValue()));
+
+        AccessTokenResponse tokenResponse = JsonSerialization.readValue(storedToken.substring(1, storedToken.length() - 1).replace("\\", ""), AccessTokenResponse.class);
+        String firstLoginAccessToken = tokenResponse.getToken();
+        assertThat(firstLoginAccessToken, not(nullValue()));
+        String firstLoginRefreshToken = tokenResponse.getRefreshToken();
+        assertThat(firstLoginRefreshToken, not(nullValue()));
+
+        // Step 3: Logout and log back in
+        AccountHelper.logout(adminClient.realm(bc.consumerRealmName()), "brucewayne");
+        loginPage.open(bc.consumerRealmName());
+        logInWithIdp(bc.getIDPAlias(), "brucewayne", BrokerTestConstants.USER_PASSWORD);
+
+        // Step 5: Fetch the stored token - access token should have been updated, but the refresh token should remain the same
+        storedToken = testingClient.server(bc.consumerRealmName()).fetchString(session -> {
+            RealmModel realmModel = session.getContext().getRealm();
+            UserModel userModel = session.users().getUserByUsername(realmModel, "brucewayne");
+            FederatedIdentityModel fedIdentity = session.users().getFederatedIdentitiesStream(realmModel, userModel).findFirst().orElse(null);
+            return fedIdentity != null ? fedIdentity.getToken() : null;
+        });
+
+        tokenResponse = JsonSerialization.readValue(storedToken.substring(1, storedToken.length() - 1).replace("\\", ""), AccessTokenResponse.class);
+        String secondLoginAccessToken = tokenResponse.getToken();
+        assertThat(secondLoginAccessToken, not(nullValue()));
+        String secondLoginRefreshToken = tokenResponse.getRefreshToken();
+        assertThat(secondLoginRefreshToken, not(nullValue()));
+
+        // Ensure the access token has changed, but the refresh token remains the same
+        assertThat(firstLoginAccessToken, not(equalTo(secondLoginAccessToken)));
+        assertThat(firstLoginRefreshToken, equalTo(secondLoginRefreshToken));
+    }
+
     /**
      * KEYCLOAK-10932
      */
@@ -391,7 +445,7 @@ public class KcOidcFirstBrokerLoginTest extends AbstractFirstBrokerLoginTest {
         updateAccountInformationPage.assertCurrent();
 
         assertEquals("Please specify username.", loginUpdateProfilePage.getInputErrors().getUsernameError());
-        
+
         updateAccountInformationPage.updateAccountInformation("new-username", "no-first-name@localhost.com", "First Name", "Last Name");
 
         UserRepresentation userRepresentation = AccountHelper.getUserRepresentation(adminClient.realm(bc.consumerRealmName()), "new-username");
